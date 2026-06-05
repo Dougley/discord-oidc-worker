@@ -139,37 +139,60 @@ app.post('/token', async (c) => {
 
 	let displayName = userInfo['global_name'] ?? userInfo['username']
 
+	// Build a standard OIDC `picture` claim from the Discord avatar (or default avatar).
+	let picture
+	if (userInfo['avatar']) {
+		const ext = userInfo['avatar'].startsWith('a_') ? 'gif' : 'png'
+		picture = `https://cdn.discordapp.com/avatars/${userInfo['id']}/${userInfo['avatar']}.${ext}`
+	} else {
+		const defaultIndex = userInfo['discriminator'] && userInfo['discriminator'] !== '0'
+			? parseInt(userInfo['discriminator']) % 5
+			: Number((BigInt(userInfo['id']) >> 22n) % 6n)
+		picture = `https://cdn.discordapp.com/embed/avatars/${defaultIndex}.png`
+	}
+
+	// get discord's MFA status and use it to populate the amr and acr claims. This is a bit of a stretch and
+	// technically incorrect, since we cant confirm MFA was used in this session, but it's the best we can do with the info available.
+	const mfaEnabled = userInfo['mfa_enabled'] ?? false
+	const amr = mfaEnabled ? ['pwd', 'mfa'] : ['pwd']
+	const acr = mfaEnabled ? 'mfa' : 'pwd'
+
 	const idToken = await new jose.SignJWT({
-		iss: 'https://cloudflare.com',
-		aud: config.clientId,
+		iss: new URL(c.req.url).origin,
+		aud: c.env.CLIENT_ID,
 		preferred_username,
 		...userInfo,
 		...roleClaims,
+		sub: userInfo['id'],
 		email: userInfo['email'],
+		email_verified: userInfo['verified'] ?? false,
 		global_name: userInfo['global_name'],
 		name: displayName,
+		picture,
+		locale: userInfo['locale'],
+		mfa_enabled: mfaEnabled,
+		amr,
+		acr,
 		guilds: servers
 	})
-		.setProtectedHeader({ alg: 'RS256' })
+		.setProtectedHeader({ alg: 'RS256', kid: 'jwtRS256' })
+		.setIssuedAt()
+		.setNotBefore(Math.floor(Date.now() / 1000) - 5)
 		.setExpirationTime('1h')
-		.setAudience(config.clientId)
-		.sign((await loadOrGenerateKeyPair(c.env.KV)).privateKey)
+		.setAudience(c.env.CLIENT_ID)
+		.sign((await loadSigningKey(c.env)).privateKey)
 
 	return c.json({
 		...r,
-		scope: 'identify email',
+		scope: 'openid email profile',
 		id_token: idToken
 	})
 })
 
 app.get('/jwks.json', async (c) => {
-	let publicKey = (await loadOrGenerateKeyPair(c.env.KV)).publicKey
+	const { publicJwk } = await loadSigningKey(c.env)
 	return c.json({
-		keys: [{
-			alg: 'RS256',
-			kid: 'jwtRS256',
-			...(await crypto.subtle.exportKey('jwk', publicKey))
-		}]
+		keys: [publicJwk]
 	})
 })
 
