@@ -1,7 +1,10 @@
 name = "discord-oidc"
 main = "worker.js"
-compatibility_date = "2022-12-24"
+compatibility_date = "2025-06-01"
 
-kv_namespaces = [
-  { binding = "KV", id = "0b9abda82acf461c8d4ecda656217e20", preview_id = "b43c22430b5240dea89cd6cc350d3946" }
-]
+# Non-sensitive configuration. CLIENT_SECRET and SIGNING_KEY are secrets — set them
+# with `npx wrangler secret put <NAME>` (do NOT put them here).
+[vars]
+CLIENT_ID = "1219413673861189642"
+REDIRECT_URL = "https://dougley.cloudflareaccess.com/cdn-cgi/access/callback"
+SERVERS_TO_CHECK_ROLES_FOR = [ "110462143152803840" ]

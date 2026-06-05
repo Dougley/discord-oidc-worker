@@ -1,0 +1,10 @@
+# Copy to `.dev.vars` for local `wrangler dev`. These are the secret values;
+# non-sensitive config (CLIENT_ID, REDIRECT_URL, SERVERS_TO_CHECK_ROLES_FOR)
+# lives in wrangler.toml under [vars].
+#
+# In production these are set with `npx wrangler secret put <NAME>` instead.
+
+CLIENT_SECRET="your-discord-oauth2-client-secret"
+
+# A private RS256 JWK produced by `npm run generate-key`, as a single-line JSON string:
+SIGNING_KEY='{"kty":"RSA","n":"...","e":"AQAB","d":"...","p":"...","q":"...","dp":"...","dq":"...","qi":"...","alg":"RS256"}'
