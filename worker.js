@@ -53,30 +53,36 @@ app.post('/token', async (c) => {
 	const body = await c.req.parseBody()
 	const code = body['code']
 	const params = new URLSearchParams({
-		'client_id': config.clientId,
-		'client_secret': config.clientSecret,
-		'redirect_uri': config.redirectURL,
+		'client_id': c.env.CLIENT_ID,
+		'client_secret': c.env.CLIENT_SECRET,
+		'redirect_uri': c.env.REDIRECT_URL,
 		'code': code,
-		'grant_type': 'authorization_code',
-		'scope': 'identify email'
+		'grant_type': 'authorization_code'
 	}).toString()
 
-	const r = await fetch('https://discord.com/api/v10/oauth2/token', {
+	const tokenResp = await fetch('https://discord.com/api/v10/oauth2/token', {
 		method: 'POST',
 		body: params,
 		headers: {
 			'Content-Type': 'application/x-www-form-urlencoded'
 		}
-	}).then(res => res.json())
+	})
 
-	if (r === null) return new Response("Bad request.", { status: 400 })
-	const userInfo = await fetch('https://discord.com/api/v10/users/@me', {
+	const r = await tokenResp.json().catch(() => null)
+
+	if (!tokenResp.ok || !r || !r['access_token']) {
+		return c.text('Bad request.', 400)
+	}
+
+	const userResp = await fetch('https://discord.com/api/v10/users/@me', {
 		headers: {
 			'Authorization': 'Bearer ' + r['access_token']
 		}
-	}).then(res => res.json())
+	})
 
-	if (!userInfo['verified']) return c.text('Bad request.', 400)
+	const userInfo = await userResp.json().catch(() => null)
+
+	if (!userResp.ok || !userInfo || !userInfo['verified']) return c.text('Bad request.', 400)
 
 	let servers = []
 
@@ -95,19 +101,30 @@ app.post('/token', async (c) => {
 
 	let roleClaims = {}
 
-	if (c.env.DISCORD_TOKEN && 'serversToCheckRolesFor' in config) {
-		await Promise.all(config.serversToCheckRolesFor.map(async guildId => {
+	// Roles are read with the user's own OAuth token via the guilds.members.read
+	// scope, so no bot token (and no bot in the server) is required. Gate on the
+	// scopes Discord actually granted rather than just config presence.
+	const scopesAuthorized = (r['scope'] || '').split(' ')
+
+	// SERVERS_TO_CHECK_ROLES_FOR is a [vars] array; tolerate a JSON string too.
+	const serversToCheck = Array.isArray(c.env.SERVERS_TO_CHECK_ROLES_FOR)
+		? c.env.SERVERS_TO_CHECK_ROLES_FOR
+		: JSON.parse(c.env.SERVERS_TO_CHECK_ROLES_FOR || '[]')
+
+	if (scopesAuthorized.includes('guilds.members.read') && serversToCheck.length > 0) {
+		await Promise.all(serversToCheck.map(async guildId => {
 			if (servers.includes(guildId)) {
-				let memberPromise = fetch(`https://discord.com/api/v10/guilds/${guildId}/members/${userInfo['id']}`, {
+				const memberResp = await fetch(`https://discord.com/api/v10/users/@me/guilds/${guildId}/member`, {
 					headers: {
-						'Authorization': 'Bot ' + c.env.DISCORD_TOKEN
+						'Authorization': 'Bearer ' + r['access_token']
 					}
 				})
-				// i had issues doing this any other way?
-				const memberResp = await memberPromise
-				const memberJson = await memberResp.json()
+				if (!memberResp.ok) return
 
-				roleClaims[`roles:${guildId}`] = memberJson.roles
+				const memberJson = await memberResp.json().catch(() => null)
+				if (memberJson && Array.isArray(memberJson.roles)) {
+					roleClaims[`roles:${guildId}`] = memberJson.roles
+				}
 			}
 
 		}
