@@ -1,56 +1,47 @@
-import * as config from './config.json'
 import { Hono } from 'hono'
 import * as jose from 'jose'
-
-const algorithm = {
-	name: 'RSASSA-PKCS1-v1_5',
-	modulusLength: 2048,
-	publicExponent: new Uint8Array([0x01, 0x00, 0x01]),
-	hash: { name: 'SHA-256' },
-}
 
 const importAlgo = {
 	name: 'RSASSA-PKCS1-v1_5',
 	hash: { name: 'SHA-256' },
 }
 
-async function loadOrGenerateKeyPair(KV) {
-	let keyPair = {}
-	let keyPairJson = await KV.get('keys', { type: 'json' })
+// The RS256 signing key is supplied as a private JWK in the SIGNING_KEY secret
+// (generate one with `npm run generate-key`). Cached per-isolate after first import.
+let cachedPrivateKey = null
+let cachedPublicJwk = null
 
-	if (keyPairJson !== null) {
-		keyPair.publicKey = await crypto.subtle.importKey('jwk', keyPairJson.publicKey, importAlgo, true, ['verify'])
-		keyPair.privateKey = await crypto.subtle.importKey('jwk', keyPairJson.privateKey, importAlgo, true, ['sign'])
+async function loadSigningKey(env) {
+	if (cachedPrivateKey) return { privateKey: cachedPrivateKey, publicJwk: cachedPublicJwk }
 
-		return keyPair
-	} else {
-		keyPair = await crypto.subtle.generateKey(algorithm, true, ['sign', 'verify'])
-
-		await KV.put('keys', JSON.stringify({
-			privateKey: await crypto.subtle.exportKey('jwk', keyPair.privateKey),
-			publicKey: await crypto.subtle.exportKey('jwk', keyPair.publicKey)
-		}))
-
-		return keyPair
+	if (!env.SIGNING_KEY) {
+		throw new Error('SIGNING_KEY secret is not set. Generate one with `npm run generate-key`.')
 	}
 
+	const jwk = JSON.parse(env.SIGNING_KEY)
+	cachedPrivateKey = await crypto.subtle.importKey('jwk', jwk, importAlgo, false, ['sign'])
+	// A private RSA JWK already contains the public parameters (n, e), so the public
+	// JWKS is derived from it — no separate public key needs to be stored or exported.
+	cachedPublicJwk = { kty: 'RSA', n: jwk.n, e: jwk.e, alg: 'RS256', kid: 'jwtRS256', use: 'sig' }
+
+	return { privateKey: cachedPrivateKey, publicJwk: cachedPublicJwk }
 }
 
 const app = new Hono()
 
 app.get('/authorize/:scopemode', async (c) => {
 
-	if (c.req.query('client_id') !== config.clientId
-		|| c.req.query('redirect_uri') !== config.redirectURL
+	if (c.req.query('client_id') !== c.env.CLIENT_ID
+		|| c.req.query('redirect_uri') !== c.env.REDIRECT_URL
 		|| !['guilds', 'email'].includes(c.req.param('scopemode'))) {
 		return c.text('Bad request.', 400)
 	}
 
 	const params = new URLSearchParams({
-		'client_id': config.clientId,
-		'redirect_uri': config.redirectURL,
+		'client_id': c.env.CLIENT_ID,
+		'redirect_uri': c.env.REDIRECT_URL,
 		'response_type': 'code',
-		'scope': c.req.param('scopemode') == 'guilds' ? 'identify email guilds' : 'identify email',
+		'scope': c.req.param('scopemode') == 'guilds' ? 'identify email guilds guilds.members.read' : 'identify email',
 		'state': c.req.query('state'),
 		'prompt': 'none'
 	}).toString()
